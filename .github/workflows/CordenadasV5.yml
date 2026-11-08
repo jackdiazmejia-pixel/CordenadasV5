@@ -1,0 +1,777 @@
+name: Build Coords Capture
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Limpiar proyecto viejo
+        run: |
+          rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
+
+      - name: Aceptar licencias de Android SDK
+        run: |
+          sudo mkdir -p $ANDROID_HOME/licenses
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" | sudo tee $ANDROID_HOME/licenses/android-sdk-license > /dev/null
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" | sudo tee $ANDROID_HOME/licenses/android-sdk-preview-license > /dev/null
+
+      - name: Crear archivos de Gradle
+        run: |
+          mkdir -p app/src/main/java/com/coordscapture
+
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "CoordsCapture"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.coordscapture"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.coordscapture"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release { isMinifyEnabled = false }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          EOF
+
+      - name: Crear manifest
+        run: |
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Coords AMOLED"
+                  android:theme="@style/Theme.MaterialComponents.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".CaptureService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="coordinate_capture_overlay" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Crear MainActivity
+        run: |
+          cat << 'EOF' > app/src/main/java/com/coordscapture/MainActivity.kt
+          package com.coordscapture
+
+          import android.content.Intent
+          import android.content.res.ColorStateList
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import com.google.android.material.button.MaterialButton
+
+          class MainActivity : AppCompatActivity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(Color.BLACK)
+                      gravity = Gravity.CENTER
+                      setPadding(48, 48, 48, 48)
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "COORDS\nAMOLED"
+                      setTextColor(Color.WHITE)
+                      textSize = 28f
+                      gravity = Gravity.CENTER
+                      setPadding(0, 0, 0, 60)
+                      letterSpacing = 0.1f
+                  }
+
+                  val subtitle = TextView(this).apply {
+                      text = "Fondo negro puro\nPrecisión al pixel\nFormato X=540 Y=543"
+                      setTextColor(Color.parseColor("#AAAAAA"))
+                      textSize = 14f
+                      gravity = Gravity.CENTER
+                      setPadding(0, 0, 0, 80)
+                  }
+
+                  val btnScan = MaterialButton(this).apply {
+                      text = "ESCANEAR"
+                      textSize = 18f
+                      setTextColor(Color.WHITE)
+                      backgroundTintList = ColorStateList.valueOf(Color.parseColor("#222222"))
+                      cornerRadius = 24
+                      setPadding(80, 40, 80, 40)
+                      strokeWidth = 2
+                      strokeColor = ColorStateList.valueOf(Color.parseColor("#333333"))
+                      setOnClickListener {
+                          if (!Settings.canDrawOverlays(this@MainActivity)) {
+                              Toast.makeText(this@MainActivity, "Activa 'Mostrar sobre otras apps'", Toast.LENGTH_LONG).show()
+                              val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                              startActivity(intent)
+                              return@setOnClickListener
+                          }
+                          val i = Intent(this@MainActivity, CaptureService::class.java).apply { action = "START" }
+                          if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+                          Toast.makeText(this@MainActivity, "Cruz activa - minimizando", Toast.LENGTH_SHORT).show()
+                          moveTaskToBack(true)
+                      }
+                  }
+
+                  val btnCerrar = MaterialButton(this).apply {
+                      text = "CERRAR SERVICIO"
+                      textSize = 16f
+                      setTextColor(Color.WHITE)
+                      backgroundTintList = ColorStateList.valueOf(Color.parseColor("#8B0000"))
+                      cornerRadius = 24
+                      setPadding(80, 32, 80, 32)
+                      setOnClickListener {
+                          val stopIntent = Intent(this@MainActivity, CaptureService::class.java).apply {
+                              action = "STOP"
+                          }
+                          stopService(stopIntent)
+                          Toast.makeText(this@MainActivity, "Servicio cerrado", Toast.LENGTH_SHORT).show()
+                          finish()
+                      }
+                  }
+
+                  val hint = TextView(this).apply {
+                      text = "\n\nInstrucciones:\n1. ESCANEAR\n2. Pon el dedo en cualquier parte y muévelo: la cruz se mueve despacio\n3. Toca el cuadrito de arriba de la cruz → copia X=... Y=...\n4. PUNTO / DESLIZAR: en deslizar, el primer toque guarda el inicio y el segundo copia inicio → final\n5. Toca ESCANEANDO / DETENIDO para pausar o reanudar, y la X para cerrar"
+                      setTextColor(Color.parseColor("#555555"))
+                      textSize = 11f
+                      gravity = Gravity.CENTER
+                  }
+
+                  root.addView(title)
+                  root.addView(subtitle)
+                  root.addView(btnScan)
+                  root.addView(btnCerrar)
+                  root.addView(hint)
+
+                  setContentView(root)
+              }
+          }
+          EOF
+
+      - name: Crear CaptureService
+        run: |
+          cat << 'EOF' > app/src/main/java/com/coordscapture/CaptureService.kt
+          package com.coordscapture
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.PixelFormat
+          import android.graphics.RectF
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewConfiguration
+          import android.view.WindowManager
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.core.app.NotificationCompat
+          import kotlin.math.abs
+          import kotlin.math.max
+          import kotlin.math.roundToInt
+
+          /**
+           * Capa a pantalla completa: dibuja la cruz fina y el cuadrito con las coordenadas.
+           * El dedo funciona como un touchpad: donde sea que lo pongas, la cruz se mueve
+           * lo mismo que el dedo (por la sensibilidad) sin saltar debajo de el.
+           */
+          class CrossView(
+              ctx: Context,
+              private val onCopy: (String) -> Unit,
+              private val onInfo: (String) -> Unit
+          ) : View(ctx) {
+
+              private val density = ctx.resources.displayMetrics.density
+              private val slop = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
+
+              // 0.5 = la cruz se mueve a la mitad de la velocidad del dedo (mas preciso).
+              // Si la quieres mas rapida sube el numero; 1.0 = igual que el dedo.
+              private val sens = 0.5f
+
+              private var cx = -1f
+              private var cy = -1f
+
+              private var swipeMode = false
+              private var hasStart = false
+              private var startX = 0
+              private var startY = 0
+
+              private val boxRect = RectF()
+              private val modeRect = RectF()
+              private var lines: List<String> = emptyList()
+              private var modeLabel = "PUNTO"
+
+              private var refX = 0f
+              private var refY = 0f
+              private var refCx = 0f
+              private var refCy = 0f
+              private var downOn = 0 // 0 = nada, 1 = cuadro de coordenadas, 2 = boton de modo
+              private var moved = false
+
+              private val darkLine = Paint().apply {
+                  color = Color.argb(170, 0, 0, 0)
+                  strokeWidth = 3f
+                  style = Paint.Style.STROKE
+              }
+              private val lightLine = Paint().apply {
+                  color = Color.argb(240, 255, 255, 255)
+                  strokeWidth = 1f
+                  style = Paint.Style.STROKE
+              }
+              private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.RED
+                  style = Paint.Style.FILL
+              }
+              private val startPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.argb(210, 0, 229, 255)
+                  strokeWidth = 1f
+                  style = Paint.Style.STROKE
+              }
+              private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.argb(215, 0, 0, 0)
+                  style = Paint.Style.FILL
+              }
+              private val boxText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE
+                  textSize = 13f * density
+              }
+              private val modePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL
+              }
+              private val modeText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE
+                  textSize = 11f * density
+                  isFakeBoldText = true
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                  super.onSizeChanged(w, h, ow, oh)
+                  if (cx < 0f) {
+                      cx = w / 2f
+                      cy = h / 2f
+                  } else {
+                      clampCross()
+                  }
+              }
+
+              private fun clampCross() {
+                  cx = cx.coerceIn(0f, max(0, width - 1).toFloat())
+                  cy = cy.coerceIn(0f, max(0, height - 1).toFloat())
+              }
+
+              /** Posicion de esta capa en la pantalla real (para que X e Y sean de pantalla). */
+              private fun offset(): IntArray {
+                  val l = IntArray(2)
+                  getLocationOnScreen(l)
+                  return l
+              }
+
+              private fun computeLayout() {
+                  val off = offset()
+                  val x = cx.roundToInt() + off[0]
+                  val y = cy.roundToInt() + off[1]
+                  val list = mutableListOf("X=$x Y=$y")
+                  if (swipeMode && hasStart) list.add("Inicio X=$startX Y=$startY")
+                  lines = list
+                  modeLabel = if (swipeMode) "DESLIZAR" else "PUNTO"
+
+                  val pad = 8f * density
+                  val gap = 6f * density
+                  val margin = 4f * density
+                  val arm = 14f * density
+                  val lineH = boxText.fontSpacing
+                  var maxW = 0f
+                  for (s in list) maxW = max(maxW, boxText.measureText(s))
+                  val boxW = maxW + pad * 2
+                  val boxH = lineH * list.size + pad * 2
+                  val modeW = modeText.measureText(modeLabel) + pad * 2
+                  val rowW = boxW + gap + modeW
+
+                  val px = cx.roundToInt() + 0.5f
+                  val py = cy.roundToInt() + 0.5f
+                  var left = px - boxW / 2f
+                  if (left + rowW > width - margin) left = width - margin - rowW
+                  if (left < margin) left = margin
+                  var top = py - arm - gap - boxH
+                  if (top < margin) top = py + arm + gap
+                  if (top + boxH > height - margin) top = height - margin - boxH
+                  boxRect.set(left, top, left + boxW, top + boxH)
+                  modeRect.set(left + boxW + gap, top, left + rowW, top + boxH)
+              }
+
+              override fun onDraw(c: Canvas) {
+                  if (cx < 0f) return
+                  computeLayout()
+                  val px = cx.roundToInt() + 0.5f
+                  val py = cy.roundToInt() + 0.5f
+                  val arm = 14f * density
+
+                  if (swipeMode && hasStart) {
+                      val off = offset()
+                      val sx = startX - off[0] + 0.5f
+                      val sy = startY - off[1] + 0.5f
+                      c.drawLine(sx, sy, px, py, startPaint)
+                      c.drawCircle(sx, sy, 5f * density, startPaint)
+                  }
+
+                  c.drawLine(px - arm, py, px + arm, py, darkLine)
+                  c.drawLine(px, py - arm, px, py + arm, darkLine)
+                  c.drawLine(px - arm, py, px + arm, py, lightLine)
+                  c.drawLine(px, py - arm, px, py + arm, lightLine)
+                  c.drawCircle(px, py, density, dotPaint)
+
+                  val r = 4f * density
+                  val pad = 8f * density
+                  c.drawRoundRect(boxRect, r, r, boxPaint)
+                  var ty = boxRect.top + pad - boxText.fontMetrics.ascent
+                  for (s in lines) {
+                      c.drawText(s, boxRect.left + pad, ty, boxText)
+                      ty += boxText.fontSpacing
+                  }
+
+                  modePaint.color = if (swipeMode) Color.argb(235, 230, 81, 0) else Color.argb(235, 45, 45, 45)
+                  c.drawRoundRect(modeRect, r, r, modePaint)
+                  val mw = modeText.measureText(modeLabel)
+                  val fm = modeText.fontMetrics
+                  val baseline = modeRect.centerY() - (fm.ascent + fm.descent) / 2f
+                  c.drawText(modeLabel, modeRect.centerX() - mw / 2f, baseline, modeText)
+              }
+
+              override fun onTouchEvent(ev: MotionEvent): Boolean {
+                  when (ev.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          computeLayout()
+                          refX = ev.x
+                          refY = ev.y
+                          refCx = cx
+                          refCy = cy
+                          moved = false
+                          downOn = when {
+                              modeRect.contains(ev.x, ev.y) -> 2
+                              boxRect.contains(ev.x, ev.y) -> 1
+                              else -> 0
+                          }
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          if (!moved) {
+                              // sobre el cuadro o el boton se tolera un poco de temblor; en el resto se mueve de inmediato
+                              val thr = if (downOn == 0) 0f else slop
+                              if (abs(ev.x - refX) > thr || abs(ev.y - refY) > thr) {
+                                  moved = true
+                                  if (downOn != 0) {
+                                      refX = ev.x
+                                      refY = ev.y
+                                  }
+                              }
+                          }
+                          if (moved) {
+                              cx = refCx + (ev.x - refX) * sens
+                              cy = refCy + (ev.y - refY) * sens
+                              clampCross()
+                              invalidate()
+                          }
+                      }
+                      MotionEvent.ACTION_UP -> {
+                          if (!moved) {
+                              if (downOn == 1) doCopy() else if (downOn == 2) toggleMode()
+                          }
+                          downOn = 0
+                      }
+                      MotionEvent.ACTION_CANCEL -> {
+                          downOn = 0
+                      }
+                  }
+                  return true
+              }
+
+              private fun toggleMode() {
+                  swipeMode = !swipeMode
+                  hasStart = false
+                  invalidate()
+                  onInfo(if (swipeMode) "DESLIZAR: toca el cuadro en el inicio y luego en el final" else "PUNTO: toca el cuadro para copiar")
+              }
+
+              private fun doCopy() {
+                  val off = offset()
+                  val x = cx.roundToInt() + off[0]
+                  val y = cy.roundToInt() + off[1]
+                  if (swipeMode) {
+                      if (!hasStart) {
+                          startX = x
+                          startY = y
+                          hasStart = true
+                          onInfo("INICIO guardado X=$x Y=$y. Mueve la cruz al final y toca el cuadro")
+                      } else {
+                          onCopy("X=$startX Y=$startY → X=$x Y=$y")
+                          hasStart = false
+                      }
+                  } else {
+                      onCopy("X=$x Y=$y")
+                  }
+                  invalidate()
+              }
+          }
+
+          class CaptureService : Service() {
+
+              private var wm: WindowManager? = null
+              private var floatingBtn: View? = null
+              private var scanLabel: TextView? = null
+              private var btnParams: WindowManager.LayoutParams? = null
+              private var crossView: CrossView? = null
+              private var captureAttached = false
+              private var isScanning = true
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  startForegroundNotification()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      "STOP" -> {
+                          removeAll()
+                          stopForeground(STOP_FOREGROUND_REMOVE)
+                          stopSelf()
+                          return START_NOT_STICKY
+                      }
+                      else -> {
+                          showAll()
+                          return START_STICKY
+                      }
+                  }
+              }
+
+              private fun overlayType(): Int =
+                  if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                  else WindowManager.LayoutParams.TYPE_PHONE
+
+              private fun startForegroundNotification() {
+                  val channelId = "coords_channel"
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val channel = NotificationChannel(channelId, "Coords", NotificationManager.IMPORTANCE_LOW)
+                      channel.setShowBadge(false)
+                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+                  }
+                  val notif: Notification = NotificationCompat.Builder(this, channelId)
+                      .setContentTitle("Coords AMOLED activo")
+                      .setContentText("Cruz de coordenadas activa")
+                      .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                      .setOngoing(true)
+                      .build()
+                  startForeground(1, notif)
+              }
+
+              private fun addCaptureOverlay() {
+                  if (captureAttached) return
+                  val params = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      overlayType(),
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      if (Build.VERSION.SDK_INT >= 30) {
+                          layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                      } else if (Build.VERSION.SDK_INT >= 28) {
+                          layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                      }
+                  }
+                  val v = crossView ?: CrossView(
+                      this,
+                      { text ->
+                          copyText(text)
+                          Toast.makeText(this, "$text - COPIADO", Toast.LENGTH_SHORT).show()
+                          vibrate()
+                      },
+                      { msg -> Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+                  ).also { crossView = it }
+                  try {
+                      wm?.addView(v, params)
+                      captureAttached = true
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun removeCaptureOverlay() {
+                  if (captureAttached) {
+                      try { crossView?.let { wm?.removeView(it) } } catch (_: Exception) {}
+                  }
+                  captureAttached = false
+              }
+
+              /** Arrastre del boton flotante; si no se arrastro, cuenta como toque. */
+              private fun dragListener(params: WindowManager.LayoutParams, onTap: () -> Unit): View.OnTouchListener {
+                  var startPx = 0
+                  var startPy = 0
+                  var touchX = 0f
+                  var touchY = 0f
+                  var dragging = false
+                  return View.OnTouchListener { _, event ->
+                      when (event.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              startPx = params.x
+                              startPy = params.y
+                              touchX = event.rawX
+                              touchY = event.rawY
+                              dragging = false
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (event.rawX - touchX).toInt()
+                              val dy = (event.rawY - touchY).toInt()
+                              if (abs(dx) > 10 || abs(dy) > 10) {
+                                  dragging = true
+                                  params.x = startPx + dx
+                                  params.y = startPy + dy
+                                  floatingBtn?.let { wm?.updateViewLayout(it, params) }
+                              }
+                              true
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (!dragging) onTap()
+                              dragging = false
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+              }
+
+              private fun showAll() {
+                  removeAll()
+                  isScanning = true
+                  addCaptureOverlay()
+
+                  val btnP = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      overlayType(),
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = 100
+                      y = 400
+                  }
+                  btnParams = btnP
+
+                  val row = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+                  val label = TextView(this).apply {
+                      text = "ESCANEANDO"
+                      setTextColor(Color.WHITE)
+                      textSize = 12f
+                      setBackgroundColor(Color.parseColor("#222222"))
+                      setPadding(32, 20, 32, 20)
+                  }
+                  val close = TextView(this).apply {
+                      text = "X"
+                      setTextColor(Color.WHITE)
+                      textSize = 12f
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(Color.parseColor("#5A0000"))
+                      setPadding(28, 20, 28, 20)
+                  }
+                  label.setOnTouchListener(dragListener(btnP) { toggleScanning() })
+                  close.setOnTouchListener(dragListener(btnP) { closeAll() })
+                  val closeLp = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.WRAP_CONTENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { leftMargin = 6 }
+                  row.addView(label)
+                  row.addView(close, closeLp)
+
+                  wm?.addView(row, btnP)
+                  floatingBtn = row
+                  scanLabel = label
+              }
+
+              private fun toggleScanning() {
+                  isScanning = !isScanning
+                  val label = scanLabel ?: return
+                  if (isScanning) {
+                      label.text = "ESCANEANDO"
+                      label.setBackgroundColor(Color.parseColor("#222222"))
+                      if (!captureAttached) {
+                          addCaptureOverlay()
+                          // se vuelve a poner el boton para que quede por encima de la capa
+                          val p = btnParams
+                          val b = floatingBtn
+                          if (p != null && b != null) {
+                              try {
+                                  wm?.removeView(b)
+                                  wm?.addView(b, p)
+                              } catch (_: Exception) {}
+                          }
+                      }
+                      Toast.makeText(this, "ESCANEANDO activado", Toast.LENGTH_SHORT).show()
+                  } else {
+                      label.text = "DETENIDO"
+                      label.setBackgroundColor(Color.parseColor("#880000"))
+                      removeCaptureOverlay()
+                      Toast.makeText(this, "DETENIDO - toca de nuevo para escanear", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun closeAll() {
+                  removeAll()
+                  stopForeground(STOP_FOREGROUND_REMOVE)
+                  stopSelf()
+              }
+
+              private fun copyText(text: String) {
+                  val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                  cm.setPrimaryClip(ClipData.newPlainText("coords", text))
+              }
+
+              private fun vibrate() {
+                  try {
+                      val v = getSystemService(VIBRATOR_SERVICE) as Vibrator
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+                      } else {
+                          @Suppress("DEPRECATION")
+                          v.vibrate(40)
+                      }
+                  } catch (_: Exception) {}
+              }
+
+              private fun removeAll() {
+                  try { floatingBtn?.let { wm?.removeView(it) } } catch (_: Exception) {}
+                  removeCaptureOverlay()
+                  floatingBtn = null
+                  scanLabel = null
+                  crossView = null
+              }
+
+              override fun onDestroy() {
+                  removeAll()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+      - name: Compilar
+        run: |
+          gradle clean assembleDebug --no-daemon --stacktrace
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coords-AMOLED-${{ github.sha }}
+          path: app/build/outputs/apk/debug/app-debug.apk
